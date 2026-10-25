@@ -6,7 +6,7 @@ UA = os.environ.get("FEED_UA") or "CMiraiItemFeed/1.0 (+https://github.com/cmira
 CACHE = os.path.join(HERE, ".cache")
 ICON = {"clearsky": 0, "fair": 1, "partlycloudy": 1, "cloudy": 2, "fog": 3, "lightrain": 4, "rain": 4, "heavyrain": 4, "lightrainshowers": 4, "rainshowers": 4, "heavyrainshowers": 4,
         "sleet": 5, "lightsleet": 5, "heavysleet": 5, "sleetshowers": 5, "snow": 6, "lightsnow": 6, "heavysnow": 6, "snowshowers": 6, "lightsnowshowers": 6, "heavysnowshowers": 6}
- 
+
 def icon(code):
     if not code: return 2
     base = code.split("_")[0]
@@ -15,7 +15,7 @@ def icon(code):
     k = ICON.get(base, 2)
     if night and k in (0, 1): k += 8
     return k
- 
+
 def fetch(lat, lon, key):
     os.makedirs(CACHE, exist_ok=True)
     meta_p = os.path.join(CACHE, key + ".meta"); body_p = os.path.join(CACHE, key + ".json")
@@ -36,7 +36,7 @@ def fetch(lat, lon, key):
         if e.code == 304 and os.path.exists(body_p): return json.load(open(body_p))
         if e.code == 429: raise SystemExit("429 throttled, stop")
         raise
- 
+
 def summarize(d, tzmin):
     ts = d["properties"]["timeseries"]
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -48,8 +48,28 @@ def summarize(d, tzmin):
     local_today = (now + datetime.timedelta(minutes=tzmin)).date()
     temps = [e["data"]["instant"]["details"]["air_temperature"] for e in ts if (datetime.datetime.fromisoformat(e["time"].replace("Z", "+00:00")) + datetime.timedelta(minutes=tzmin)).date() == local_today]
     lo = min(temps) if temps else det["air_temperature"]; hi = max(temps) if temps else det["air_temperature"]
-    return "%d|%d|%d|%d|%.1f" % (round(det["air_temperature"]), icon(code), round(lo), round(hi), pr)
- 
+    return "%d|%d|%d|%d|%.1f|%s" % (round(det["air_temperature"]), icon(code), round(lo), round(hi), pr, daily(ts, tzmin, local_today))
+
+def daily(ts, tzmin, today):
+    days = {}
+    for e in ts:
+        t = datetime.datetime.fromisoformat(e["time"].replace("Z", "+00:00")) + datetime.timedelta(minutes=tzmin)
+        d = t.date()
+        if d < today: continue
+        rec = days.setdefault(d, {"temps": [], "sym": None, "dist": 99})
+        rec["temps"].append(e["data"]["instant"]["details"]["air_temperature"])
+        nx = e["data"].get("next_6_hours") or e["data"].get("next_1_hours") or e["data"].get("next_12_hours")
+        code = (nx or {}).get("summary", {}).get("symbol_code")
+        dist = abs(t.hour + t.minute / 60 - 12)
+        if code and dist < rec["dist"]:
+            rec["sym"] = code.replace("_night", "_day"); rec["dist"] = dist
+    out = []
+    for d in sorted(days)[:8]:
+        r = days[d]
+        if len(r["temps"]) < 2: continue
+        out.append("%s,%d,%d,%d,%d" % (d.strftime("%Y%m%d"), (d.weekday() + 1) % 7, icon(r["sym"]), round(min(r["temps"])), round(max(r["temps"]))))
+    return ";".join(out)
+
 def main():
     cities = json.load(open(os.path.join(HERE, "cities.json")))
     os.makedirs(OUT, exist_ok=True)
@@ -63,7 +83,7 @@ def main():
         except SystemExit:
             raise
         except Exception as e:
-            print("skip", key, e); s = "x|x|x|x|x"
+            print("skip", key, e); s = "x|x|x|x|x|"
         lines.append("%s|%s|%s|%s|%s|%d|%s|%s" % (key, ja, en, ko, zh, tz, lang, s))
         time.sleep(0.3)
     head = "CMI-WEATHER|1|%s|Data from MET Norway (CC BY 4.0)" % now.strftime("%Y-%m-%dT%H:%MZ")
@@ -71,6 +91,6 @@ def main():
     open(os.path.join(OUT, "weather.txt"), "w", encoding="utf-8").write(txt)
     open(os.path.join(OUT, "index.html"), "w", encoding="utf-8").write("<!doctype html><meta charset=utf-8><title>C.MiraiItem data</title><p>C.MiraiItem world gimmick data feed. Weather data from <a href='https://www.met.no/en'>MET Norway</a> (CC BY 4.0), processed.</p>")
     print("ok", len(lines))
- 
+
 if __name__ == "__main__":
     main()
