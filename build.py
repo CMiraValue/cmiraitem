@@ -4,6 +4,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")
 UA = os.environ.get("FEED_UA") or "CMiraiItemFeed/1.0 (+https://github.com/cmiraiitem)"
 CACHE = os.path.join(HERE, ".cache")
+HOURS = 48  # weather2.txt: hourly entries per city
 ICON = {"clearsky": 0, "fair": 1, "partlycloudy": 1, "cloudy": 2, "fog": 3, "lightrain": 4, "rain": 4, "heavyrain": 4, "lightrainshowers": 4, "rainshowers": 4, "heavyrainshowers": 4,
         "sleet": 5, "lightsleet": 5, "heavysleet": 5, "sleetshowers": 5, "snow": 6, "lightsnow": 6, "heavysnow": 6, "snowshowers": 6, "lightsnowshowers": 6, "heavysnowshowers": 6}
 
@@ -70,26 +71,56 @@ def daily(ts, tzmin, today):
         out.append("%s,%d,%d,%d,%d" % (d.strftime("%Y%m%d"), (d.weekday() + 1) % 7, icon(r["sym"]), round(min(r["temps"])), round(max(r["temps"]))))
     return ";".join(out)
 
+def hourly(ts, now):
+    # weather2.txt only: "YYYYMMDDHH;temp,icon,precip;..." = UTC hour of the first entry, then consecutive hours.
+    start = now.replace(minute=0, second=0, microsecond=0)
+    out = []; base = None; prev = None
+    for e in ts:
+        t = datetime.datetime.fromisoformat(e["time"].replace("Z", "+00:00"))
+        if t < start: continue
+        n1 = e["data"].get("next_1_hours")
+        if not n1 or (prev is not None and t - prev != datetime.timedelta(hours=1)): break
+        if base is None: base = t
+        temp = e["data"]["instant"]["details"]["air_temperature"]
+        out.append("%d,%d,%.1f" % (round(temp), icon(n1.get("summary", {}).get("symbol_code", "")), n1.get("details", {}).get("precipitation_amount", 0.0)))
+        prev = t
+        if len(out) >= HOURS: break
+    return base.strftime("%Y%m%d%H") + ";" + ";".join(out) if out else ""
+
 def main():
     cities = json.load(open(os.path.join(HERE, "cities.json")))
     os.makedirs(OUT, exist_ok=True)
     lines = []
+    lines2 = []
     now = datetime.datetime.now(datetime.timezone.utc)
     for c in cities:
         key, ko, ja, en, zh, lat, lon, tzname, lang = c
         tz = int(now.astimezone(ZoneInfo(tzname)).utcoffset().total_seconds() // 60)
+        d = None
         try:
-            s = summarize(fetch(lat, lon, key), tz)
+            d = fetch(lat, lon, key)
+            s = summarize(d, tz)
         except SystemExit:
             raise
         except Exception as e:
-            print("skip", key, e); s = "x|x|x|x|x|"
+            print("skip", key, e); s = "x|x|x|x|x|"; d = None
         lines.append("%s|%s|%s|%s|%s|%d|%s|%s" % (key, ja, en, ko, zh, tz, lang, s))
+        h = ""
+        if d is not None:
+            try:
+                h = hourly(d["properties"]["timeseries"], now)
+            except Exception as e:
+                print("hourly skip", key, e)
+        lines2.append(lines[-1] + "|" + h)
         time.sleep(0.3)
     head = "CMI-WEATHER|1|%s|Data from MET Norway (CC BY 4.0)" % now.strftime("%Y-%m-%dT%H:%MZ")
     txt = head + "\n" + "\n".join(lines) + "\n"
     open(os.path.join(OUT, "weather.txt"), "w", encoding="utf-8").write(txt)
     open(os.path.join(OUT, "index.html"), "w", encoding="utf-8").write("<!doctype html><meta charset=utf-8><title>C.MiraiItem data</title><p>C.MiraiItem world gimmick data feed. Weather data from <a href='https://www.met.no/en'>MET Norway</a> (CC BY 4.0), processed.</p>")
+    # weather.txt above must keep exactly this format: Time Keeper DX reads it.
+    # weather2.txt = the same lines + "|hourly", for gimmicks that read the hourly forecast.
+    head2 = "CMI-WEATHER|2|%s|Data from MET Norway (CC BY 4.0)" % now.strftime("%Y-%m-%dT%H:%MZ")
+    open(os.path.join(OUT, "weather2.txt"), "w", encoding="utf-8").write(head2 + "\n" + "\n".join(lines2) + "\n")
     print("ok", len(lines))
 
 if __name__ == "__main__":
